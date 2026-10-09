@@ -28,6 +28,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -61,7 +62,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     private SharedPreferences sp;
     private SkyCompassView compassView;
     private LinearLayout compassCard;
-    private TextView compassBtn, compassStatus, compassLegend;
+    private TextView compassBtn, refreshLocBtn, compassStatus, compassLegend;
     private final float[] rotMat = new float[9], remapped = new float[9], orient = new float[3];
     private float sinAvg = 0f, cosAvg = 1f, heading = 0f, declination = 0f;
     private boolean firstSample = true, hasLoc = false, locSearching = false;
@@ -76,6 +77,9 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
             if (mode == SpaceView.SOLAR) {
                 if (offsetMs == 0 && tickCount % 60 == 0) rebuildSolar();
                 if (offsetMs == 0) updateInfo();
+            }
+            if (compassOn && hasLoc && System.currentTimeMillis() - lastLegendMs > 5000) {
+                recomputeTargets();
             }
             handler.postDelayed(this, 1000);
         }
@@ -167,19 +171,35 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         title.setText("\uD83C\uDF0D Earth in Space");
         TextView sub = tv(13, GRAY, false);
         sub.setText("Where is Earth right now? Zoom out step by step.");
+        
         LinearLayout headRow = new LinearLayout(this);
         headRow.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);
         titles.addView(title);
         titles.addView(sub);
+        
+        // Refresh Location Button
+        refreshLocBtn = tv(20, Color.WHITE, false);
+        refreshLocBtn.setText("\uD83D\uDD04"); // 🔄 icon
+        refreshLocBtn.setGravity(Gravity.CENTER);
+        refreshLocBtn.setClickable(true);
+        refreshLocBtn.setPadding(dp(8), dp(8), dp(8), dp(8));
+        refreshLocBtn.setBackground(round(0xFF101028, GREEN, 26));
+        refreshLocBtn.setVisibility(View.GONE); // Default hidden, shown when compass is on
+        refreshLocBtn.setOnClickListener(v -> manualRefreshLocation());
+
         compassBtn = tv(24, Color.WHITE, false);
         compassBtn.setText("\uD83E\uDDED");
         compassBtn.setGravity(Gravity.CENTER);
         compassBtn.setClickable(true);
         compassBtn.setOnClickListener(v -> toggleCompass());
+
         headRow.addView(titles, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        headRow.addView(compassBtn, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        headRow.addView(refreshLocBtn, new LinearLayout.LayoutParams(dp(46), dp(46)));
+        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(dp(52), dp(52));
+        btnLp.setMargins(dp(6), 0, 0, 0);
+        headRow.addView(compassBtn, btnLp);
         head.addView(headRow);
         styleCompassButton();
 
@@ -246,7 +266,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         dateBox.setPadding(0, dp(10), 0, 0);
         dateTv = tv(14, Color.WHITE, true);
         dateSeek = new SeekBar(this);
-        dateSeek.setMax(730); // +/- one year in 1 day steps
+        dateSeek.setMax(730);
         dateSeek.setProgress(365);
         dateSeek.setProgressTintList(ColorStateList.valueOf(GOLD));
         dateSeek.setThumbTintList(ColorStateList.valueOf(GOLD));
@@ -565,6 +585,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     private void styleCompassButton() {
         compassBtn.setBackground(round(compassOn ? GREEN : 0xFF101028, GREEN, 26));
         compassBtn.setAlpha(compassOn ? 1f : 0.85f);
+        refreshLocBtn.setVisibility(compassOn ? View.VISIBLE : View.GONE);
     }
 
     private boolean hasPerm() {
@@ -588,6 +609,16 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
             stopSensors();
             stopLocation();
         }
+    }
+
+    private void manualRefreshLocation() {
+        if (!compassOn) return;
+        if (!hasPerm() && Build.VERSION.SDK_INT >= 23) {
+            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, 1);
+            return;
+        }
+        Toast.makeText(this, "Refreshing location...", Toast.LENGTH_SHORT).show();
+        startLocation();
     }
 
     @Override
@@ -671,53 +702,63 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         updateLegend();
     }
 
-    private static String dir8(double az) {
-        String[] n = {"north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"};
-        return n[(int) Math.round(az / 45.0) % 8];
-    }
-
     private void updateLegend() {
-        if (skyTargets == null) return;
+        lastLegendMs = System.currentTimeMillis();
+        if (skyTargets == null) { compassLegend.setText(""); return; }
         StringBuilder sb = new StringBuilder();
         for (Sky.Target t : skyTargets) {
-            double diff = ((t.az - heading + 540.0) % 360.0) - 180.0;
-            String turn = Math.abs(diff) < 5 ? "straight ahead"
-                    : (diff > 0 ? String.format(Locale.US, "turn right %.0f\u00B0", diff) : String.format(Locale.US, "turn left %.0f\u00B0", -diff));
-            String where = t.alt > 0 ? String.format(Locale.US, "%.0f\u00B0 above the horizon", t.alt)
-                    : String.format(Locale.US, "%.0f\u00B0 below the horizon (through the ground)", -t.alt);
-            sb.append(t.emoji).append(" ").append(t.name).append("\n   ").append(dir8(t.az))
-                    .append(String.format(Locale.US, " (%.0f\u00B0)", t.az)).append(" \u2022 ").append(where).append(" \u2022 ").append(turn).append("\n");
+            if (sb.length() > 0) sb.append("\n");
+            String dir = dir8(t.az);
+            if (t.alt > 0) {
+                sb.append(String.format(Locale.US, "%s %s \u2014 in your sky, towards %s (%.0f\u00B0 high)", t.emoji, t.name, dir, t.alt));
+            } else if (t.alt > -12) {
+                sb.append(String.format(Locale.US, "%s %s \u2014 just below the horizon, towards %s", t.emoji, t.name, dir));
+            } else {
+                sb.append(String.format(Locale.US, "%s %s \u2014 below the horizon, towards %s", t.emoji, t.name, dir));
+            }
         }
-        sb.append("\nEarth is moving towards the direction marked \uD83C\uDF0D \u2014 about 30 km every second. "
-                + "The Sun carries us towards \uD83C\uDF00 (the constellation Cygnus).");
-        compassLegend.setText(sb.toString().trim());
+        compassLegend.setText(sb.toString());
     }
 
-    @SuppressWarnings("deprecation")
-    private int displayRotation() { return getWindowManager().getDefaultDisplay().getRotation(); }
+    private static String dir8(double az) {
+        String[] n = {"north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"};
+        int i = (int) Math.round(az / 45.0) % 8;
+        if (i < 0) i += 8;
+        return n[i];
+    }
 
+    // -------------------------------------------------------------- SensorEventListener
     @Override
-    public void onSensorChanged(SensorEvent event) {
-        if (event.sensor.getType() != Sensor.TYPE_ROTATION_VECTOR) return;
-        SensorManager.getRotationMatrixFromVector(rotMat, event.values);
-        int xAxis, yAxis;
-        switch (displayRotation()) {
-            case Surface.ROTATION_90: xAxis = SensorManager.AXIS_Y; yAxis = SensorManager.AXIS_MINUS_X; break;
-            case Surface.ROTATION_180: xAxis = SensorManager.AXIS_MINUS_X; yAxis = SensorManager.AXIS_MINUS_Y; break;
-            case Surface.ROTATION_270: xAxis = SensorManager.AXIS_MINUS_Y; yAxis = SensorManager.AXIS_X; break;
-            default: xAxis = SensorManager.AXIS_X; yAxis = SensorManager.AXIS_Y; break;
-        }
-        SensorManager.remapCoordinateSystem(rotMat, xAxis, yAxis, remapped);
+    public void onSensorChanged(SensorEvent e) {
+        if (e.sensor.getType() != Sensor.TYPE_ROTATION_VECTOR) return;
+        SensorManager.getRotationMatrixFromVector(rotMat, e.values);
+        int rotation = getWindowManager().getDefaultDisplay().getRotation();
+        int axisX = SensorManager.AXIS_X, axisY = SensorManager.AXIS_Y;
+        if (rotation == Surface.ROTATION_90) { axisX = SensorManager.AXIS_Y; axisY = SensorManager.AXIS_MINUS_X; }
+        else if (rotation == Surface.ROTATION_180) { axisX = SensorManager.AXIS_MINUS_X; axisY = SensorManager.AXIS_MINUS_Y; }
+        else if (rotation == Surface.ROTATION_270) { axisX = SensorManager.AXIS_MINUS_Y; axisY = SensorManager.AXIS_X; }
+
+        SensorManager.remapCoordinateSystem(rotMat, axisX, axisY, remapped);
         SensorManager.getOrientation(remapped, orient);
-        double rad = Math.toRadians(Math.toDegrees(orient[0]) + declination);
-        float sn = (float) Math.sin(rad), cs = (float) Math.cos(rad);
-        if (firstSample) { sinAvg = sn; cosAvg = cs; firstSample = false; }
-        else { sinAvg += 0.15f * (sn - sinAvg); cosAvg += 0.15f * (cs - cosAvg); }
+        float magneticHeading = (float) Math.toDegrees(orient[0]);
+        float trueHeading = (magneticHeading + declination + 360f) % 360f;
+
+        float rad = (float) Math.toRadians(trueHeading);
+        if (firstSample) {
+            sinAvg = (float) Math.sin(rad);
+            cosAvg = (float) Math.cos(rad);
+            firstSample = false;
+        } else {
+            float alpha = 0.15f;
+            sinAvg = alpha * (float) Math.sin(rad) + (1 - alpha) * sinAvg;
+            cosAvg = alpha * (float) Math.cos(rad) + (1 - alpha) * cosAvg;
+        }
         heading = (float) Math.toDegrees(Math.atan2(sinAvg, cosAvg));
         if (heading < 0) heading += 360f;
-        compassView.setHeading(heading);
-        long now = System.currentTimeMillis();
-        if (now - lastLegendMs > 400) { lastLegendMs = now; updateLegend(); }
+
+        if (compassView != null) {
+            compassView.setHeading(heading);
+        }
     }
 
     @Override public void onAccuracyChanged(Sensor sensor, int accuracy) { }
