@@ -2,6 +2,7 @@ package com.blackfalcon.earthinspace;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -114,6 +115,19 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         stopLocation();
     }
 
+    @Override
+    public void onBackPressed() {
+        new AlertDialog.Builder(this)
+                .setTitle("Exit App")
+                .setMessage("Are you sure you want to exit?")
+                .setPositiveButton("Yes", (dialog, which) -> {
+                    super.onBackPressed();
+                    finish();
+                })
+                .setNegativeButton("No", null)
+                .show();
+    }
+
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 
     // -------------------------------------------------------------------- UI
@@ -179,14 +193,14 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         titles.addView(title);
         titles.addView(sub);
         
-        // Refresh Location Button
+        // Refresh Location Button (Always visible)
         refreshLocBtn = tv(20, Color.WHITE, false);
         refreshLocBtn.setText("\uD83D\uDD04"); // 🔄 icon
         refreshLocBtn.setGravity(Gravity.CENTER);
         refreshLocBtn.setClickable(true);
         refreshLocBtn.setPadding(dp(8), dp(8), dp(8), dp(8));
         refreshLocBtn.setBackground(round(0xFF101028, GREEN, 26));
-        refreshLocBtn.setVisibility(View.GONE); // Default hidden, shown when compass is on
+        refreshLocBtn.setVisibility(View.VISIBLE);
         refreshLocBtn.setOnClickListener(v -> manualRefreshLocation());
 
         compassBtn = tv(24, Color.WHITE, false);
@@ -234,7 +248,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         compassStatus.setPadding(0, dp(2), 0, dp(4));
         compassView = new SkyCompassView(this);
         compassLegend = tv(13, Color.WHITE, false);
-        compassLegend.setLineSpacing(0, 1.12f);
+        compassLegend.setLineSpacing(0, 1.15f);
         compassLegend.setPadding(0, dp(6), 0, 0);
         compassCard.addView(ct);
         compassCard.addView(compassStatus);
@@ -585,7 +599,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     private void styleCompassButton() {
         compassBtn.setBackground(round(compassOn ? GREEN : 0xFF101028, GREEN, 26));
         compassBtn.setAlpha(compassOn ? 1f : 0.85f);
-        refreshLocBtn.setVisibility(compassOn ? View.VISIBLE : View.GONE);
+        refreshLocBtn.setVisibility(View.VISIBLE);
     }
 
     private boolean hasPerm() {
@@ -612,7 +626,6 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     }
 
     private void manualRefreshLocation() {
-        if (!compassOn) return;
         if (!hasPerm() && Build.VERSION.SDK_INT >= 23) {
             requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, 1);
             return;
@@ -634,7 +647,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     private void stopSensors() { sm.unregisterListener(this); }
 
     private void startLocation() {
-        if (!compassOn || !hasPerm()) { updateCompassStatus(); return; }
+        if (!hasPerm()) { updateCompassStatus(); return; }
         stopLocation();
         boolean any = false;
         try {
